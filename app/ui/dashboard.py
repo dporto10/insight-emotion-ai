@@ -1,27 +1,212 @@
-﻿import streamlit as st
+﻿import os
 import json
+import math
 import pandas as pd
-import os
+import streamlit as st
 import plotly.graph_objects as go
-import plotly.express as px
 
 from app.analysis.pipeline import processar_video
 from app.analysis.diagnostico_comercial import gerar_diagnostico_comercial
+from app.analysis.insights_contextuais import enriquecer_diagnostico_contextual
 
 
-st.set_page_config(
-    page_title="Insight Emotion AI",
-    page_icon="📊",
-    layout="wide"
-)
+st.set_page_config(page_title="Insight Emotion AI", page_icon="📊", layout="wide")
+
+MAPA_Y = {
+    "Interesse": 6,
+    "Curiosidade": 5,
+    "Atenção moderada": 4,
+    "Perda de interesse": 3,
+    "Resistencia": 2,
+    "Apreensao": 1,
+    "Rejeicao": 0,
+    "Indefinido": 0,
+}
+
+def formatar_tempo(seg):
+    try:
+        return f"{float(seg):.1f}".replace(".", ",") + "s"
+    except Exception:
+        return "—"
+
+def pill_html(texto):
+    chave = str(texto).strip().lower()
+    if chave in ["fraco", "negativa"]:
+        cls = "pill-red"
+    elif chave in ["medio", "médio"]:
+        cls = "pill-orange"
+    elif chave == "bom":
+        cls = "pill-yellow"
+    elif chave in ["forte", "excelente"]:
+        cls = "pill-green"
+    else:
+        cls = "pill-gray"
+    return f'<span class="pill {cls}">{texto}</span>'
+
+def score_to_percent(v):
+    try:
+        v = float(v)
+    except Exception:
+        return 0
+    return max(0, min(100, int(v)))
+
+def score_bar(value):
+    pct = score_to_percent(value)
+    segmentos = 12
+    ativos = int(round((pct / 100) * segmentos))
+    if pct > 0 and ativos == 0:
+        ativos = 1
+    ativos = max(0, min(segmentos, ativos))
+    partes = []
+    for i in range(segmentos):
+        cls = "progress-seg active" if i < ativos else "progress-seg"
+        partes.append(f'<span class="{cls}"></span>')
+    return '<div class="progress-track"><div class="progress-segments">' + ''.join(partes) + '</div></div>'
+
+def classe_cor(label):
+    chave = str(label).lower()
+    if chave in ["medio", "médio"]:
+        return "orange"
+    if chave == "bom":
+        return "yellow"
+    if chave in ["forte", "excelente"]:
+        return "green"
+    return "red"
+
+def render_heatmap(df_plot, metrics):
+    if df_plot.empty or "emocao_negocio" not in df_plot.columns:
+        st.markdown('<div class="card">Sem dados para gerar o mapa de engajamento.</div>', unsafe_allow_html=True)
+        return
+
+    pico = metrics.get("pico_emocional_segundos")
+    queda = metrics.get("queda_interesse_segundos")
+    momentos_impacto = metrics.get("momentos_impacto", [])
+
+    try:
+        total_seg = float(df_plot["tempo_segundos"].max())
+        if total_seg <= 0:
+            total_seg = 50.0
+    except Exception:
+        total_seg = 50.0
+
+    melhor_fechamento = None
+    for momento in momentos_impacto:
+        emocao = str(momento.get("emocao", "")).strip().lower()
+        if melhor_fechamento is None and emocao in ["interesse", "curiosidade", "neutro"]:
+            melhor_fechamento = momento.get("fim_segundos")
+
+    queda_posterior = None
+    for momento in momentos_impacto:
+        try:
+            inicio = float(momento.get("inicio_segundos", 0) or 0)
+        except Exception:
+            inicio = 0
+        emocao = str(momento.get("emocao", "")).strip().lower()
+        if inicio >= 30 and emocao in ["desconexao", "desconexão", "perda de interesse", "sad", "fear", "tristeza", "medo", "resistencia", "resistência"]:
+            queda_posterior = inicio
+            break
+
+    def pos(seg):
+        try:
+            if seg is None:
+                return None
+            s = float(seg)
+            return max(1, min(98, (s / total_seg) * 100))
+        except Exception:
+            return None
+
+    top_cards = (
+        '<div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin-bottom:24px;">'
+            '<div style="background:linear-gradient(180deg, rgba(255,255,255,.04), rgba(255,255,255,.02));border:1px solid rgba(151,172,214,.10);border-radius:18px;padding:18px 18px;">'
+                '<div style="color:#eef4ff;font-weight:800;font-size:1rem;margin-bottom:8px;">⭐ Pico de interesse</div>'
+                f'<div style="color:#ffffff;font-size:2rem;font-weight:900;line-height:1;">{formatar_tempo(pico)}</div>'
+                '<div style="color:#b9c8e8;font-size:.92rem;margin-top:10px;">Momento de maior conexão</div>'
+            '</div>'
+            '<div style="background:linear-gradient(180deg, rgba(255,255,255,.04), rgba(255,255,255,.02));border:1px solid rgba(151,172,214,.10);border-radius:18px;padding:18px 18px;">'
+                '<div style="color:#eef4ff;font-weight:800;font-size:1rem;margin-bottom:8px;">▲ Queda de atenção</div>'
+                f'<div style="color:#ffffff;font-size:2rem;font-weight:900;line-height:1;">{formatar_tempo(queda)}</div>'
+                '<div style="color:#b9c8e8;font-size:.92rem;margin-top:10px;">Início da perda de interesse</div>'
+            '</div>'
+            '<div style="background:linear-gradient(180deg, rgba(255,255,255,.04), rgba(255,255,255,.02));border:1px solid rgba(151,172,214,.10);border-radius:18px;padding:18px 18px;">'
+                '<div style="color:#eef4ff;font-weight:800;font-size:1rem;margin-bottom:8px;">● Leitura do pitch</div>'
+                '<div style="color:#ffffff;font-size:2rem;font-weight:900;line-height:1;">Fluxo</div>'
+                '<div style="color:#b9c8e8;font-size:.92rem;margin-top:10px;">Jornada emocional da conversa</div>'
+            '</div>'
+        '</div>'
+    )
+
+    line = '<div style="position:absolute;left:0;right:0;top:58%;height:4px;background:linear-gradient(90deg,#ff6b72 0%, #ff8a62 25%, #ffd76a 50%, #6ee7b7 72%, #8ea7d8 100%);border-radius:999px;transform:translateY(-50%);opacity:.68;"></div>'
+
+    markers = []
+    for s in [0, 10, 20, 30, 40, total_seg]:
+        l = pos(s)
+        if l is not None:
+            markers.append(
+                f'<div style="position:absolute;left:{l:.2f}%;top:58%;transform:translate(-50%,-50%);width:8px;height:8px;border-radius:999px;background:#8ea7d8;border:1px solid rgba(255,255,255,.28);z-index:3;"></div>'
+            )
+
+    if queda is not None:
+        markers.append(
+            f'<div style="position:absolute;left:{pos(queda):.2f}%;top:58%;transform:translate(-50%,-50%);width:16px;height:16px;border-radius:999px;background:#ff6b72;box-shadow:0 0 18px rgba(255,107,114,.28);border:1px solid rgba(255,255,255,.28);z-index:4;"></div>'
+        )
+        markers.append(
+            f'<div style="position:absolute;left:{max(pos(queda), 8):.2f}%;top:58%;transform:translate(0,-36px);background:linear-gradient(180deg, rgba(25,36,60,.98) 0%, rgba(18,27,46,.98) 100%);border:1px solid rgba(255,107,114,.26);border-radius:16px;padding:10px 12px;min-width:120px;box-shadow:0 12px 30px rgba(0,0,0,.28);z-index:4;"><div style="color:#eef4ff;font-size:.82rem;font-weight:800;margin-bottom:4px;">⚠ Queda crítica</div><div style="color:#b9c8e8;font-size:.78rem;line-height:1.35;">início da conversa</div></div>'
+        )
+
+    if melhor_fechamento is not None:
+        markers.append(
+            f'<div style="position:absolute;left:{pos(melhor_fechamento):.2f}%;top:58%;transform:translate(-50%,-50%);width:16px;height:16px;border-radius:999px;background:#ffd76a;box-shadow:0 0 18px rgba(255,215,106,.28);border:1px solid rgba(255,255,255,.28);z-index:4;"></div>'
+        )
+        markers.append(
+            f'<div style="position:absolute;left:{max(pos(melhor_fechamento), 18):.2f}%;top:58%;transform:translate(-50%,-78px);background:linear-gradient(180deg, rgba(25,36,60,.98) 0%, rgba(18,27,46,.98) 100%);border:1px solid rgba(255,215,106,.22);border-radius:16px;padding:10px 12px;min-width:150px;box-shadow:0 12px 30px rgba(0,0,0,.28);z-index:4;"><div style="color:#eef4ff;font-size:.82rem;font-weight:800;margin-bottom:4px;">⭐ Nível máximo</div><div style="color:#b9c8e8;font-size:.78rem;line-height:1.35;">{formatar_tempo(melhor_fechamento)} | Momento favorável</div></div>'
+        )
+
+    if queda_posterior is not None:
+        markers.append(
+            f'<div style="position:absolute;left:{pos(queda_posterior):.2f}%;top:58%;transform:translate(-50%,-50%);width:14px;height:14px;border-radius:999px;background:#ff8a62;box-shadow:0 0 18px rgba(255,138,98,.28);border:1px solid rgba(255,255,255,.28);z-index:4;"></div>'
+        )
+
+    scale = []
+    for s in [0, 10, 20, 30, 40, 50]:
+        real = min(s, total_seg)
+        l = pos(real if total_seg >= 50 else (s / 50) * total_seg)
+        scale.append(f'<span style="position:absolute;left:{l:.2f}%;transform:translateX(-50%);color:#9fb6ff;font-size:.78rem;">{s}s</span>')
+
+    insight_1 = f'⚠️ <strong>Queda crítica</strong> logo no início, atenção foi perdida aos <strong>{formatar_tempo(queda)}</strong>' if queda is not None else '⚠️ <strong>Queda crítica</strong> não identificada'
+    insight_2 = f'⭐ <strong>Melhor momento</strong> aos {formatar_tempo(melhor_fechamento)}: máximo interesse foi alcançado' if melhor_fechamento is not None else '⭐ <strong>Melhor momento</strong> não identificado'
+    insight_3 = f'➚ <strong>Queda rápida</strong> após {formatar_tempo(queda_posterior)}: explicação longa causou desatenção' if queda_posterior is not None else '➚ <strong>Queda rápida</strong> não foi observada no final da conversa'
+
+    html = (
+        '<div class="card" style="padding:24px;border-radius:22px;">'
+        + top_cards +
+        '<div style="position:relative;height:156px;margin:12px 0 12px 0;">'
+        + ''.join(markers)
+        + line
+        + '</div>'
+        + '<div style="position:relative;height:18px;margin-top:2px;margin-bottom:18px;">'
+        + ''.join(scale)
+        + '</div>'
+        + '<div style="display:flex;gap:22px;flex-wrap:wrap;font-size:.92rem;margin-bottom:18px;">'
+            + '<span style="color:#6ee7b7;">● Alto engajamento</span>'
+            + '<span style="color:#ffd76a;">● Atenção moderada</span>'
+            + '<span style="color:#ff6b72;">● Resistência / desconexão</span>'
+        + '</div>'
+        + '<div style="display:flex;flex-direction:column;gap:10px;">'
+            + f'<div class="engagement-insight">{insight_1}</div>'
+            + f'<div class="engagement-insight">{insight_2}</div>'
+            + f'<div class="engagement-insight">{insight_3}</div>'
+        + '</div>'
+        + '</div>'
+    )
+
+    st.markdown(html, unsafe_allow_html=True)
+
 
 st.markdown("""
 <style>
 :root{
     --bg:#071226;
-    --bg2:#0b1730;
     --card:#18263f;
-    --card2:#1c2b46;
     --border:#31435f;
     --text:#eef4ff;
     --muted:#9aabc6;
@@ -40,23 +225,14 @@ st.markdown("""
     padding-top: 1rem;
     padding-bottom: 1rem;
 }
-[data-testid="stSidebar"]{
-    background: linear-gradient(180deg,#08111f 0%, #050b16 100%);
-    border-right:1px solid rgba(255,255,255,.06);
-}
-[data-testid="stSidebar"] *{
-    color:#d9e5ff !important;
-}
 .main-title{
     font-size:2.45rem;
     font-weight:900;
     color:var(--text);
-    letter-spacing:-0.02em;
     margin-bottom:.25rem;
 }
 .sub-title{
     color:var(--muted);
-    font-size:1rem;
     margin-bottom:1.35rem;
 }
 .section-title{
@@ -66,7 +242,7 @@ st.markdown("""
     margin-top:1.1rem;
     margin-bottom:.9rem;
 }
-.card, .kpi-card, .big-card, .panel-card, .bench-card, .score-card, .frases-box, .strategy-box {
+.card, .big-card, .panel-card, .score-card{
     background: linear-gradient(180deg, rgba(29,43,70,.96) 0%, rgba(24,38,63,.96) 100%);
     border:1px solid rgba(144,166,203,.16);
     border-radius:22px;
@@ -75,30 +251,50 @@ st.markdown("""
 }
 .big-card{ padding:22px; }
 .card{ padding:18px; }
-.kpi-card{ padding:18px; min-height:118px; }
-.panel-card{ padding:20px; min-height:230px; }
-.bench-card{ padding:18px; min-height:300px; }
-.score-card{ padding:18px; min-height:180px; margin-bottom:18px; overflow:hidden; }
-.frases-box, .strategy-box{ padding:18px; }
-.kpi-title, .small-label, .metric-title{
-    color:var(--muted);
-    font-size:.95rem;
-    font-weight:600;
-    margin-bottom:8px;
+.panel-card{ padding:20px; min-height:220px; }
+.score-card{ padding:18px; min-height:160px; margin-bottom:18px; }
+.hero-score-card{
+    background:linear-gradient(180deg, rgba(29,43,70,.98) 0%, rgba(24,38,63,.98) 100%);
+    border:1px solid rgba(144,166,203,.16);
+    border-radius:24px;
+    padding:28px;
+    text-align:center;
+    margin-bottom:22px;
+    box-shadow:0 20px 50px rgba(0,0,0,.32);
 }
-.kpi-value, .metric-value{
-    color:var(--text);
-    font-size:2rem;
+.hero-score-title{
+    font-size:.85rem;
+    letter-spacing:.14em;
+    color:#9CA3AF;
+    font-weight:800;
+    margin-bottom:10px;
+}
+.hero-score-value{
+    font-size:4rem;
     font-weight:900;
-    line-height:1.05;
+    line-height:1;
+    color:#ffffff;
 }
-.kpi-sub, .metric-sub{
-    color:var(--muted);
-    font-size:.92rem;
+.hero-score-label{
     margin-top:10px;
+    font-size:1.1rem;
+    font-weight:800;
+}
+.hero-score-bar{
+    width:100%;
+    height:12px;
+    margin-top:18px;
+    background:#2a3a58;
+    border-radius:999px;
+    overflow:hidden;
+}
+.hero-score-fill{
+    height:100%;
+    background:linear-gradient(90deg,#ff6a63 0%, #ffb347 45%, #ffd166 70%, #39d98a 100%);
+    border-radius:999px;
 }
 .diag-title{
-    font-size:2.1rem;
+    font-size:2rem;
     font-weight:900;
     color:var(--red);
     margin-bottom:18px;
@@ -115,8 +311,9 @@ st.markdown("""
     padding:14px;
 }
 .diag-item-label{
-    color:var(--muted);
-    font-size:.9rem;
+    color:#ffffff;
+    font-size:.95rem;
+    font-weight:800;
     margin-bottom:8px;
 }
 .diag-item-value{
@@ -142,7 +339,6 @@ st.markdown("""
 .pill-orange{ background:rgba(255,179,71,.16); color:#ffc979; }
 .pill-yellow{ background:rgba(255,209,102,.16); color:#ffe199; }
 .pill-green{ background:rgba(57,217,138,.16); color:#7ef0b1; }
-.pill-blue{ background:rgba(100,168,255,.16); color:#9ec8ff; }
 .pill-gray{ background:rgba(255,255,255,.07); color:#c9d6ef; }
 .pill-score{
     background:rgba(255,255,255,.08);
@@ -152,13 +348,10 @@ st.markdown("""
     font-size:.85rem;
     font-weight:700;
 }
-
 .red{ color:var(--red) !important; }
 .orange{ color:var(--orange) !important; }
 .yellow{ color:var(--yellow) !important; }
 .green{ color:var(--green) !important; }
-.blue{ color:var(--blue) !important; }
-.purple{ color:var(--purple) !important; }
 
 .side-score-title{
     color:var(--text);
@@ -180,16 +373,23 @@ st.markdown("""
 }
 .progress-track{
     width:100%;
-    height:10px;
-    background:rgba(255,255,255,.10);
-    border-radius:999px;
-    overflow:hidden;
+    height:8px;
     margin-top:12px;
 }
-.progress-fill{
-    height:100%;
-    border-radius:999px;
-    background: linear-gradient(90deg,#ff5f62 0%, #ff9f43 35%, #ffd166 65%, #39d98a 100%);
+.progress-segments{
+    display:flex;
+    gap:3px;
+    width:100%;
+    height:8px;
+}
+.progress-seg{
+    flex:1;
+    height:6px;
+    border-radius:2px;
+    background:#4b5a78;
+}
+.progress-seg.active{
+    background: linear-gradient(90deg,#ff6a63 0%, #ff835b 45%, #ff4f59 100%);
 }
 .list-card-title{
     color:var(--text);
@@ -197,160 +397,192 @@ st.markdown("""
     font-weight:800;
     margin-bottom:12px;
 }
-.list-card ul{
+.panel-card ul{
     padding-left:1.1rem;
     margin:0;
 }
-.list-card li{
+.panel-card li{
     color:#e8f0ff;
     margin-bottom:11px;
     line-height:1.6;
 }
-.bench-table{
-    width:100%;
-    border-collapse:collapse;
-    margin-top:6px;
-}
-.bench-table th{
-    text-align:left;
-    color:#d9e5ff;
-    font-size:.95rem;
-    padding:10px 8px;
-    border-bottom:1px solid rgba(255,255,255,.08);
-}
-.bench-table td{
-    padding:10px 8px;
-    color:#d3def3;
-    border-bottom:1px solid rgba(255,255,255,.06);
-}
-.bench-legend{
-    margin-top:12px;
+.small-label{
     color:var(--muted);
-    font-size:.9rem;
-}
-.score-main{
-    color:#ff8b8f;
-    font-size:3rem;
-    font-weight:900;
-    line-height:1;
-}
-.score-ideal{
-    color:#ffd78a;
-    font-size:2rem;
-    font-weight:900;
-}
-.scale-row{
-    display:flex;
-    justify-content:space-between;
-    gap:10px;
-    margin-top:12px;
-    color:#d3def3;
-    font-size:.9rem;
-    font-weight:700;
-}
-.frases-box ul, .strategy-box ul{
-    margin:.25rem 0 0 1.2rem;
-    padding:0;
-}
-.frases-box li, .strategy-box li{
-    color:#e7efff;
-    margin-bottom:9px;
-    line-height:1.6;
-}
-.group-title{
-    color:#b8c7e3;
-    font-size:.92rem;
-    font-weight:800;
-    text-transform:uppercase;
-    margin-top:12px;
+    font-size:.95rem;
+    font-weight:600;
     margin-bottom:8px;
 }
-.stButton button{
-    background:linear-gradient(90deg,#6674ff 0%, #7b61ff 100%);
-    color:white;
-    border:none;
-    border-radius:14px;
-    font-weight:800;
-    padding:.72rem 1.25rem;
+.metric-value{
+    color:var(--text);
+    font-size:2rem;
+    font-weight:900;
+    line-height:1.05;
 }
-.stButton button:hover{
-    color:white;
-    border:none;
-}
-.small-muted{
+.metric-sub{
     color:var(--muted);
     font-size:.92rem;
+    margin-top:10px;
 }
+
+.heatmap-shell{
+    background: linear-gradient(180deg, rgba(13,22,45,.52) 0%, rgba(10,18,38,.30) 100%);
+    border:1px solid rgba(120,150,210,.12);
+    border-radius:22px;
+    padding:22px;
+    box-shadow:0 18px 45px rgba(0,0,0,.20);
+}
+.heatmap-top{
+    display:grid;
+    grid-template-columns:repeat(3, 1fr);
+    gap:14px;
+    margin-bottom:18px;
+}
+.heatmap-kpi{
+    display:flex;
+    align-items:flex-start;
+    gap:10px;
+    padding:14px 16px;
+    border-radius:16px;
+    border:1px solid rgba(255,255,255,.06);
+    background:rgba(255,255,255,.02);
+}
+.heatmap-kpi-icon{
+    font-size:1rem;
+    line-height:1.2;
+    margin-top:2px;
+}
+.heatmap-kpi-title{
+    color:#eef4ff;
+    font-size:1rem;
+    font-weight:800;
+    margin-bottom:4px;
+}
+.heatmap-kpi-value{
+    color:#ffffff;
+    font-size:1.9rem;
+    font-weight:900;
+    line-height:1.05;
+    margin-bottom:4px;
+}
+.heatmap-kpi-sub{
+    color:#9aabc6;
+    font-size:.84rem;
+}
+.heatmap-kpi-green .heatmap-kpi-icon{ color:#ffd166; }
+.heatmap-kpi-red .heatmap-kpi-icon{ color:#ff6b72; }
+.heatmap-kpi-blue .heatmap-kpi-icon{ color:#9bb0ff; }
+
+.heatmap-stage{ margin-top:8px; }
+.heatmap-bar{
+    display:flex;
+    width:100%;
+    height:62px;
+    border-radius:14px;
+    overflow:hidden;
+    background:#14233f;
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,.05), 0 10px 24px rgba(0,0,0,.22);
+}
+.hm-seg{
+    flex:1;
+    min-width:8px;
+    position:relative;
+}
+.hm-seg + .hm-seg{
+    box-shadow: inset 1px 0 0 rgba(9,18,36,.42);
+}
+.hm-green{ background:linear-gradient(180deg,#33e08a 0%, #10995b 100%); }
+.hm-yellow{ background:linear-gradient(180deg,#ffe56f 0%, #e0ba28 100%); }
+.hm-orange{ background:linear-gradient(180deg,#ffb15f 0%, #f07d1f 100%); }
+.hm-red{ background:linear-gradient(180deg,#ff6873 0%, #e3364a 100%); }
+.heatmap-scale{
+    display:flex;
+    justify-content:space-between;
+    margin-top:10px;
+    color:#9aabc6;
+    font-size:.84rem;
+    padding:0 2px;
+}
+.heatmap-legend{
+    display:flex;
+    flex-wrap:wrap;
+    gap:16px;
+    margin-top:16px;
+    color:#cbd7f0;
+    font-size:.88rem;
+}
+.hm-dot{
+    display:inline-block;
+    width:10px;
+    height:10px;
+    border-radius:999px;
+    margin-right:7px;
+    vertical-align:middle;
+}
+
+
+.pitch-insights-grid{
+    display:grid;
+    grid-template-columns:repeat(3, minmax(0,1fr));
+    gap:16px;
+    margin-top:14px;
+    margin-bottom:18px;
+}
+.pitch-insight-card{
+    background: linear-gradient(180deg, rgba(29,43,70,.96) 0%, rgba(24,38,63,.96) 100%);
+    border:1px solid rgba(144,166,203,.16);
+    border-radius:18px;
+    padding:18px;
+    box-shadow: 0 14px 30px rgba(0,0,0,.22);
+}
+.pitch-insight-title{
+    color:#eef4ff;
+    font-size:1rem;
+    font-weight:800;
+    margin-bottom:10px;
+}
+.pitch-insight-card ul{
+    margin:0;
+    padding-left:1rem;
+}
+.pitch-insight-card li{
+    color:#dfe9ff;
+    margin-bottom:10px;
+    line-height:1.55;
+}
+@media (max-width: 1100px){
+    .pitch-insights-grid{
+        grid-template-columns:1fr;
+    }
+}
+
+
+
+.strategy-box{
+    background: linear-gradient(180deg, rgba(29,43,70,.96) 0%, rgba(24,38,63,.96) 100%);
+    border:1px solid rgba(144,166,203,.16);
+    border-radius:20px;
+    padding:20px;
+    box-shadow:0 16px 40px rgba(0,0,0,.28);
+    margin-top:18px;
+}
+.strategy-title{
+    color:#eef4ff;
+    font-size:1.1rem;
+    font-weight:900;
+    margin-bottom:12px;
+}
+.strategy-box ul{
+    margin:0;
+    padding-left:1.1rem;
+}
+.strategy-box li{
+    color:#dfe9ff;
+    margin-bottom:10px;
+    line-height:1.6;
+}
+
 </style>
 """, unsafe_allow_html=True)
-
-MAPA_Y = {
-    "Interesse": 6,
-    "Curiosidade": 5,
-    "Neutro": 4,
-    "Desconexao": 3,
-    "Resistencia": 2,
-    "Apreensao": 1,
-    "Rejeicao": 0,
-    "Indefinido": 0,
-    "Tristeza": 3,
-    "Raiva": 2,
-    "Medo": 1,
-    "Repulsa": 0
-}
-
-def formatar_tempo(seg):
-    if seg is None:
-        return "—"
-    try:
-        return f"{float(seg):.1f}".replace(".", ",") + "s"
-    except:
-        return "—"
-
-def pill_html(texto):
-    chave = str(texto).strip().lower()
-    mapa = {
-        "fraco": "pill-red",
-        "medio": "pill-orange",
-        "médio": "pill-orange",
-        "bom": "pill-yellow",
-        "forte": "pill-green",
-        "negativa": "pill-red",
-        "positiva": "pill-green",
-        "nao identificado": "pill-gray",
-        "não identificado": "pill-gray",
-    }
-    cls = mapa.get(chave, "pill-gray")
-    return f'<span class="pill {cls}">{texto}</span>'
-
-def score_to_percent(v):
-    try:
-        v = float(v)
-    except:
-        return 0
-    if v < 0:
-        return 0
-    if v > 100:
-        return 100
-    return int(v)
-
-def score_bar(value):
-    pct = score_to_percent(value)
-    return f'<div class="progress-track"><div class="progress-fill" style="width:{pct}%"></div></div>'
-
-def score_scale():
-    return '<div class="scale-row"><span>Fraco</span><span>Médio</span><span>Bom</span><span>Excelente</span></div>'
-
-st.sidebar.markdown("## Insight Emotion AI")
-st.sidebar.markdown("### Inteligência de reação do consumidor")
-st.sidebar.markdown("---")
-st.sidebar.write("**Pipeline**")
-st.sidebar.write("✔ Vídeo")
-st.sidebar.write("✔ Transcrição")
-st.sidebar.write("✔ Análise facial")
-st.sidebar.write("✔ Análise vocal")
-st.sidebar.write("✔ Discurso")
-st.sidebar.write("✔ Negociação")
 
 st.markdown('<div class="main-title">Inteligência Emocional Insight</div>', unsafe_allow_html=True)
 st.markdown('<div class="sub-title">Plataforma de inteligência emocional e comercial para vídeos de vendas e pitch</div>', unsafe_allow_html=True)
@@ -358,22 +590,17 @@ st.markdown('<div class="sub-title">Plataforma de inteligência emocional e come
 if "analysis_id" not in st.session_state:
     st.session_state["analysis_id"] = None
 
-uploaded_file = st.file_uploader(
-    "Faça upload do vídeo da campanha",
-    type=["mp4", "mov", "avi", "mkv"]
-)
+uploaded_file = st.file_uploader("Faça upload do vídeo da campanha", type=["mp4", "mov", "avi", "mkv"])
 
 if uploaded_file:
     os.makedirs("data/uploads", exist_ok=True)
     saved_video = os.path.join("data", "uploads", uploaded_file.name)
-
     with open(saved_video, "wb") as f:
         f.write(uploaded_file.read())
-
     st.success("Vídeo carregado com sucesso.")
 
     if st.button("Analisar Campanha"):
-        with st.spinner("Processando vídeo e gerando dashboard..."):
+        with st.spinner("Processando vídeo..."):
             analysis_id = processar_video(saved_video)
             st.session_state["analysis_id"] = analysis_id
 
@@ -392,7 +619,7 @@ if analysis_id:
     momentos_path = os.path.join(base, "momentos_venda.json")
 
     if not (os.path.exists(metrics_path) and os.path.exists(insights_path) and os.path.exists(emotions_csv)):
-        st.error("Arquivos da análise não encontrados. Gere uma nova análise.")
+        st.error("Arquivos da análise não encontrados.")
         st.stop()
 
     with open(metrics_path, "r", encoding="utf-8") as f:
@@ -401,7 +628,6 @@ if analysis_id:
         insights = json.load(f)
 
     vocal, discurso, multimodal, momentos = {}, {}, {}, {}
-
     if os.path.exists(vocal_json):
         with open(vocal_json, "r", encoding="utf-8") as f:
             vocal = json.load(f)
@@ -421,16 +647,16 @@ if analysis_id:
         mapa = {
             "Felicidade": "Interesse",
             "Surpresa": "Curiosidade",
-            "Neutro": "Neutro",
-            "Tristeza": "Desconexao",
+            "Atenção moderada": "Atenção moderada",
+            "Tristeza": "Perda de interesse",
             "Raiva": "Resistencia",
             "Medo": "Apreensao",
             "Repulsa": "Rejeicao",
             "Indefinido": "Indefinido",
             "happy": "Interesse",
             "surprise": "Curiosidade",
-            "neutral": "Neutro",
-            "sad": "Desconexao",
+            "neutral": "Atenção moderada",
+            "sad": "Perda de interesse",
             "angry": "Resistencia",
             "fear": "Apreensao",
             "disgust": "Rejeicao",
@@ -439,16 +665,36 @@ if analysis_id:
         df["emocao_negocio"] = df["emocao"].map(mapa).fillna("Indefinido")
 
     diagnostico = gerar_diagnostico_comercial(metrics, vocal, discurso, multimodal, momentos)
+    diagnostico = enriquecer_diagnostico_contextual(
+        diagnostico,
+        transcription_path,
+        metrics,
+        vocal,
+        discurso,
+        multimodal,
+        momentos,
+    )
 
-    duracao = round(float(df["tempo_segundos"].max()), 2) if not df.empty else 0.0
-    amostras = int(metrics.get("total_amostras", len(df)))
+    score_integrado = multimodal.get("score_integrado", 0)
+    label = diagnostico.get("pontuacao_integrada_label", "Fraco")
+    cor = classe_cor(label)
+    pct = score_to_percent(score_integrado)
+
+    st.markdown(f"""
+    <div class="hero-score-card">
+        <div class="hero-score-title">PONTUAÇÃO GERAL</div>
+        <div class="hero-score-value">{str(score_integrado).replace(".", ",")}</div>
+        <div class="hero-score-label {cor}">{label}</div>
+        <div class="hero-score-bar"><div class="hero-score-fill" style="width:{pct}%"></div></div>
+    </div>
+    """, unsafe_allow_html=True)
 
     st.markdown('<div class="section-title">Diagnóstico Comercial</div>', unsafe_allow_html=True)
 
     top_left, top_right = st.columns([3.2, 1.8])
 
     with top_left:
-        st.markdown(f'''
+        st.markdown(f"""
         <div class="big-card">
             <div class="diag-title">{diagnostico["pitch_label"]}</div>
             <div class="diag-grid">
@@ -474,28 +720,30 @@ if analysis_id:
                 <span class="red" style="font-size:1.4rem;font-weight:900;">{diagnostico["potencial_comercial"]}</span>
             </div>
         </div>
-        ''', unsafe_allow_html=True)
+        """, unsafe_allow_html=True)
 
-        c1, c2 = st.columns(2)
+        c1, c2 = st.columns(2, gap="large")
+
         with c1:
             st.markdown(
-                '<div class="panel-card list-card"><div class="list-card-title">O Que Funcionou</div><ul>' +
-                ''.join([f'<li>{x}</li>' for x in diagnostico["o_que_funcionou"]]) +
-                '</ul></div>',
+                '<div class="panel-card success-card"><div class="list-card-title">O Que Funcionou</div><div class="check-list">' +
+                ''.join([f'<div class="check-item"><span class="check-icon">✓</span><span>{x}</span></div>' for x in diagnostico["o_que_funcionou"]]) +
+                '</div></div>',
                 unsafe_allow_html=True
             )
+
         with c2:
             st.markdown(
-                '<div class="panel-card list-card"><div class="list-card-title">O Que Prejudicou a Venda</div><ul>' +
-                ''.join([f'<li>{x}</li>' for x in diagnostico["o_que_prejudicou"]]) +
-                '</ul></div>',
+                '<div class="panel-card danger-card"><div class="list-card-title">O Que Prejudicou a Venda</div><div class="check-list">' +
+                ''.join([f'<div class="check-item"><span class="warn-icon">⚠️</span><span>{x}</span></div>' for x in diagnostico["o_que_prejudicou"]]) +
+                '</div></div>',
                 unsafe_allow_html=True
             )
 
         st.markdown(
-            '<div class="panel-card list-card" style="margin-top:14px;"><div class="list-card-title">O Que Melhorar</div><ul>' +
-            ''.join([f'<li>{x}</li>' for x in diagnostico["o_que_melhorar"]]) +
-            '</ul></div>',
+            '<div class="panel-card advice-card" style="margin-top:20px;"><div class="list-card-title">O Que Melhorar</div><div class="check-list">' +
+            ''.join([f'<div class="check-item"><span class="action-icon">⚡</span><span>{x}</span></div>' for x in diagnostico["o_que_melhorar"]]) +
+            '</div></div>',
             unsafe_allow_html=True
         )
 
@@ -505,289 +753,433 @@ if analysis_id:
             ("Fluidez", vocal.get("fluidez", 0), diagnostico["fluidez_label"]),
             ("Clareza da Oferta", discurso.get("clareza", 0), diagnostico["clareza_label"]),
             ("Fechamento", discurso.get("forca_fechamento", 0), diagnostico["fechamento_label"]),
-            ("Pontuação Integrada", multimodal.get("score_integrado", 0), diagnostico["pontuacao_integrada_label"]),
         ]
 
-        for titulo, valor, label in score_cards:
-            cor = "red"
-            if str(label).lower() in ["medio", "médio"]:
-                cor = "orange"
-            elif str(label).lower() == "bom":
-                cor = "yellow"
-            elif str(label).lower() == "forte":
-                cor = "green"
-
-            html_score = f'''
-            <div class="score-card">
+        for titulo, valor, item_label in score_cards:
+            item_cor = classe_cor(item_label)
+            html_score = f"""
+            <div class="score-card compact-insight">
                 <div class="side-score-title">{titulo}</div>
-                <div class="side-score-value {cor}">{str(valor).replace(".", ",")}</div>
+                <div class="side-score-value {item_cor}">{str(valor).replace(".", ",")}</div>
                 <div class="side-score-row">
-                    {pill_html(label)}
-                    <span class="{cor}" style="font-weight:800;">{label}</span>
+                    {pill_html(item_label)}
+                    <span class="{item_cor}" style="font-weight:800;">{item_label}</span>
                 </div>
                 {score_bar(valor)}
             </div>
-            '''
+            """
             st.markdown(html_score, unsafe_allow_html=True)
 
-    st.markdown('<div class="section-title">Parâmetros de Avaliação</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-title">Mapa de Engajamento do Pitch</div>', unsafe_allow_html=True)
 
-    bench_left, bench_right = st.columns([3.1, 1.6])
-
-    with bench_left:
-        st.markdown('''
-        <div class="bench-card">
-            <table class="bench-table">
-                <thead>
-                    <tr>
-                        <th>Métrica</th>
-                        <th>Fraco</th>
-                        <th>Médio</th>
-                        <th>Bom</th>
-                        <th>Excelente</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <tr><td>Energia vocal</td><td>0 - 20</td><td>20 - 40</td><td>40 - 70</td><td>70 - 100</td></tr>
-                    <tr><td>Fluidez</td><td>0 - 25</td><td>25 - 50</td><td>50 - 75</td><td>75 - 100</td></tr>
-                    <tr><td>Clareza</td><td>0 - 40</td><td>40 - 60</td><td>60 - 80</td><td>80 - 100</td></tr>
-                    <tr><td>Persuasão</td><td>0 - 40</td><td>40 - 60</td><td>60 - 80</td><td>80 - 100</td></tr>
-                    <tr><td>Fechamento</td><td>0 - 40</td><td>40 - 60</td><td>60 - 80</td><td>80 - 100</td></tr>
-                </tbody>
-            </table>
-            <div class="bench-legend">Fraco · Médio · Bom · Excelente</div>
-        </div>
-        ''', unsafe_allow_html=True)
-
-    with bench_right:
-        score_atual = multimodal.get("score_integrado", 0)
-        ideal = 60
-        html_bench = f'''
-        <div class="score-card">
-            <div class="small-label">Sua Pontuação:</div>
-            <div class="score-main">{str(score_atual).replace(".", ",")}</div>
-            <div class="small-label" style="margin-top:12px;">Ideal mínimo:</div>
-            <div class="score-ideal">{ideal}</div>
-            {score_bar(score_atual)}
-            {score_scale()}
-        </div>
-        '''
-        st.markdown(html_bench, unsafe_allow_html=True)
-
-    st.markdown('<div class="section-title">Linha do Tempo Emocional</div>', unsafe_allow_html=True)
-
-    gleft, gright = st.columns([3.0, 1.45])
+    gleft, gright = st.columns([3.1, 1.4], gap="large")
 
     with gleft:
         df_plot = df.copy()
         df_plot["y"] = df_plot["emocao_negocio"].map(MAPA_Y).fillna(0)
-
-        fig = go.Figure()
-        fig.add_trace(
-            go.Scatter(
-                x=df_plot["tempo_segundos"],
-                y=df_plot["y"],
-                mode="lines+markers",
-                text=df_plot["emocao_negocio"],
-                hovertemplate="Tempo: %{x}s<br>Emoção: %{text}<extra></extra>"
-            )
-        )
-
-        pico = metrics.get("pico_emocional_segundos")
-        queda = metrics.get("queda_interesse_segundos")
-
-        if pico is not None:
-            fig.add_vline(x=pico, line_dash="dash", line_color="#9b7bff", annotation_text=f"Pico {formatar_tempo(pico)}", annotation_position="top left")
-        if queda is not None:
-            fig.add_vline(x=queda, line_dash="dash", line_color="#ff5f62", annotation_text=f"Queda {formatar_tempo(queda)}", annotation_position="top left")
-
-        fig.update_layout(
-            height=410,
-            paper_bgcolor="white",
-            plot_bgcolor="white",
-            margin=dict(l=10, r=10, t=20, b=10),
-            xaxis_title="Tempo",
-            yaxis_title="Resposta",
-            yaxis=dict(
-                tickmode="array",
-                tickvals=list(MAPA_Y.values()),
-                ticktext=list(MAPA_Y.keys())
-            )
-        )
-        st.plotly_chart(fig, width="stretch")
+        render_heatmap(df_plot, metrics)
 
     with gright:
-        st.markdown(f'''
-        <div class="score-card" style="margin-bottom:14px;">
-            <div class="small-label">Frames processados</div>
-            <div class="metric-value">{amostras}</div>
-        </div>
-        ''', unsafe_allow_html=True)
-
-        st.markdown('<div class="section-title">Momentos de Maior Impacto</div>', unsafe_allow_html=True)
-        html_m = '<div class="frases-box">'
+        pico = metrics.get("pico_emocional_segundos")
+        queda = metrics.get("queda_interesse_segundos")
         momentos_impacto = metrics.get("momentos_impacto", [])
+
+        resistencia = None
+        melhor_fechamento = None
+
+        for momento in momentos_impacto:
+            emocao = str(momento.get("emocao", "")).strip().lower()
+            if resistencia is None and emocao in ["resistencia", "raiva", "rejeicao"]:
+                resistencia = momento.get("inicio_segundos")
+            if melhor_fechamento is None and emocao in ["interesse", "curiosidade", "neutro"]:
+                melhor_fechamento = momento.get("fim_segundos")
+
+        cA, cB = st.columns(2, gap="small")
+
+        with cA:
+            st.markdown(f"""
+            <div class="score-card compact-insight">
+                <div class="small-label">Pico de interesse</div>
+                <div class="metric-value">{formatar_tempo(pico)}</div>
+                <div class="metric-sub">Momento de maior conexão</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            st.markdown(f"""
+            <div class="score-card compact-insight">
+                <div class="small-label">Resistência</div>
+                <div class="metric-value">{formatar_tempo(resistencia) if resistencia else "Nenhuma"}</div>
+                <div class="metric-sub">Primeiro sinal de objeção</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        with cB:
+            st.markdown(f"""
+            <div class="score-card compact-insight">
+                <div class="small-label">Queda de atenção</div>
+                <div class="metric-value">{formatar_tempo(queda)}</div>
+                <div class="metric-sub">Início da perda de interesse</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            st.markdown(f"""
+            <div class="score-card">
+                <div class="small-label">Melhor momento para fechar</div>
+                <div class="metric-value">{formatar_tempo(melhor_fechamento)}</div>
+                <div class="metric-sub">Janela mais favorável</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        
+
+    
+
+    estrategia = []
+
+    # 1) abertura
+    conexao_inicial = str(diagnostico.get("conexao_inicial", "")).strip().lower()
+    if conexao_inicial in ["fraco", "baixo", "negativo"]:
+        estrategia.append("A abertura do pitch precisa ser mais forte. Tente começar com uma dor clara do cliente, uma promessa objetiva de resultado ou uma pergunta que gere curiosidade imediata.")
+    elif conexao_inicial in ["medio", "médio"]:
+        estrategia.append("A abertura teve conexão parcial. Vale testar uma introdução mais direta, com mais impacto nos primeiros segundos para aumentar retenção logo no início.")
+    else:
+        estrategia.append("A abertura gerou conexão razoável. Preserve a estrutura inicial e use esse trecho como base para padronizar futuras abordagens.")
+
+    # 2) valor / clareza
+    apresentacao_valor = str(diagnostico.get("apresentacao_valor", "")).strip().lower()
+    clareza = float(discurso.get("clareza", 0) or 0)
+    if apresentacao_valor in ["fraco", "baixo", "negativo"] or clareza < 50:
+        estrategia.append("A proposta de valor ainda não está clara o suficiente. Antes de falar de preço, reforce benefício, transformação e motivo pelo qual a solução vale a atenção do cliente.")
+    elif clareza < 70:
+        estrategia.append("A clareza da oferta pode melhorar. Simplifique a explicação e destaque com mais objetividade o principal benefício percebido pelo cliente.")
+    else:
+        estrategia.append("A proposta de valor está relativamente compreensível. O próximo passo é torná-la mais memorável, usando linguagem simples e foco no resultado final.")
+
+    # 3) preço
+    reacao_preco = str(diagnostico.get("reacao_preco", "")).strip().lower()
+    if reacao_preco in ["fraco", "negativo", "resistencia", "resistência"]:
+        estrategia.append("O momento do preço exige mais preparação. Reforce valor, prova, benefício e redução de risco antes de mencionar investimento, para diminuir resistência nessa etapa.")
+    else:
+        estrategia.append("A reação ao preço não foi o maior problema, mas ainda vale preparar melhor a transição para esse momento, conectando preço a valor percebido.")
+
+    # 4) fechamento
+    fechamento = str(diagnostico.get("fechamento", "")).strip().lower()
+    forca_fechamento = float(discurso.get("forca_fechamento", 0) or 0)
+    if fechamento in ["fraco", "baixo", "negativo"] or forca_fechamento < 50:
+        estrategia.append("O fechamento precisa ser mais direto. Termine a conversa com chamada clara para ação, próximo passo objetivo e menos espaço para dispersão do cliente.")
+    elif forca_fechamento < 70:
+        estrategia.append("Há espaço para fortalecer o fechamento. Vale testar perguntas de avanço, convite para decisão e fechamento com mais segurança verbal.")
+    else:
+        estrategia.append("O fechamento está relativamente funcional. A melhoria agora está em reduzir fricção e conduzir o cliente com mais naturalidade até a decisão.")
+
+    # 5) voz / ritmo
+    energia_vocal = float(vocal.get("energia_vocal", 0) or 0)
+    fluidez = float(vocal.get("fluidez", 0) or 0)
+    pausas = float(vocal.get("quantidade_pausas", 0) or 0)
+    if energia_vocal < 40:
+        estrategia.append("A energia vocal está baixa para um pitch comercial. Trabalhe mais variação de tom, presença e intenção, especialmente nos momentos de proposta de valor e fechamento.")
+    if fluidez < 50:
+        estrategia.append("A fluidez da fala pode estar prejudicando a percepção de confiança. Treinar ritmo, continuidade e transições mais limpas tende a melhorar a autoridade do pitch.")
+    if pausas >= 4:
+        estrategia.append("Foram detectadas pausas longas ou frequentes. Isso pode reduzir impacto e segurança. Vale ensaiar trechos críticos para tornar a fala mais contínua.")
+
+    # 6) momentos emocionais
+    pico_seg = metrics.get("pico_emocional_segundos")
+    queda_seg = metrics.get("queda_interesse_segundos")
+    if pico_seg is not None:
+        estrategia.append(f"O trecho em {formatar_tempo(pico_seg)} merece atenção: ali houve maior conexão emocional. Use esse ponto como referência para entender o que mais engaja no seu discurso.")
+    if queda_seg is not None:
+        estrategia.append(f"A atenção começa a cair em {formatar_tempo(queda_seg)}. Reveja o que está sendo dito nesse momento e considere encurtar, simplificar ou mudar a abordagem.")
+
+    # 7) recomendações do diagnóstico, sem repetir demais
+    for item in diagnostico.get("o_que_melhorar", []):
+        if item not in estrategia and len(estrategia) < 8:
+            estrategia.append(item)
+
+        prioridades = estrategia[:3]
+    complementares = estrategia[3:6]
+
+    cards_html = ''.join([
+        f'<div style="background:linear-gradient(180deg, rgba(255,255,255,.045) 0%, rgba(255,255,255,.02) 100%);'
+        f'border:1px solid rgba(151,172,214,.12);border-radius:18px;padding:16px;box-shadow:0 10px 26px rgba(0,0,0,.18);">'
+        f'<div style="color:#b9c8e8;font-size:.78rem;font-weight:800;letter-spacing:.08em;text-transform:uppercase;margin-bottom:10px;">'
+        f'Prioridade {i+1}</div>'
+        f'<div style="color:#eef4ff;font-size:.98rem;line-height:1.68;font-weight:500;">{texto}</div>'
+        f'</div>'
+        for i, texto in enumerate(prioridades)
+    ])
+
+    complementares_html = ''
+    if complementares:
+        complementares_html = (
+            '<div style="color:#dbe6ff;font-size:.96rem;font-weight:800;margin-top:6px;margin-bottom:12px;">Ajustes complementares</div>'
+            '<ul>'
+            + ''.join([f'<li>{x}</li>' for x in complementares]) +
+            '</ul>'
+        )
+
+    html_strategy = (
+        '<div class="strategy-box">'
+        '<div class="strategy-title">Plano Estratégico de Melhoria</div>'
+        '<div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;margin-top:14px;margin-bottom:18px;">'
+        + cards_html +
+        '</div>'
+        + complementares_html +
+        '</div>'
+    )
+
+    st.markdown('<div class="section-title">Plano Estratégico e Momentos Detectados</div>', unsafe_allow_html=True)
+
+    plano_col, momentos_col = st.columns([1.65, 1], gap="large")
+
+    with plano_col:
+        st.markdown(html_strategy, unsafe_allow_html=True)
+
+    with momentos_col:
+        st.markdown('<div class="strategy-title" style="margin-bottom:12px;">Momentos Detectados</div>', unsafe_allow_html=True)
+
+        momentos_impacto = metrics.get("momentos_impacto", [])
+
         if momentos_impacto:
-            html_m += '<ul>'
-            for i, momento in enumerate(momentos_impacto, start=1):
-                html_m += f"<li>{i}. {formatar_tempo(momento['inicio_segundos'])} - {formatar_tempo(momento['fim_segundos'])} | {momento['emocao']}</li>"
-            html_m += '</ul>'
-        else:
-            html_m += '<div class="small-muted">Nenhum momento identificado.</div>'
-        html_m += '</div>'
-        st.markdown(html_m, unsafe_allow_html=True)
+            mapa_negocio = {
+                "Desconexao": "Perda de interesse",
+                "Desconexão": "Perda de interesse",
+                "Neutro": "Atenção moderada",
+                "Interesse": "Alto engajamento",
+                "Curiosidade": "Abertura para avançar",
+                "Resistencia": "Resistência comercial",
+                "Resistência": "Resistência comercial",
+                "Apreensao": "Dúvida na decisão",
+                "Apreensão": "Dúvida na decisão",
+                "Rejeicao": "Rejeição à oferta",
+                "Rejeição": "Rejeição à oferta"
+            }
 
-        st.markdown('<div class="section-title">Distribuição Emocional</div>', unsafe_allow_html=True)
-        dist = pd.DataFrame(list(metrics.get("distribuicao_emocional", {}).items()), columns=["emocao", "percentual"])
-        if not dist.empty:
-            fig2 = px.pie(dist, names="emocao", values="percentual", hole=0.55)
-            fig2.update_layout(height=320, margin=dict(l=10, r=10, t=10, b=10))
-            st.plotly_chart(fig2, width="stretch")
+            for m in momentos_impacto[:3]:
+                emocao_negocio = mapa_negocio.get(str(m.get("emocao", "")), str(m.get("emocao", "")))
 
-    st.markdown('<div class="section-title">Análise da Negociação</div>', unsafe_allow_html=True)
 
-    n1, n2, n3 = st.columns(3)
+                cor_borda = "rgba(151,172,214,0.15)"
+                cor_bg = "rgba(255,255,255,0.03)"
+                recomendacao = ""
 
-    with n1:
-        st.markdown(f'''
-        <div class="kpi-card">
-            <div class="kpi-title">Preço mencionado</div>
-            <div class="kpi-value blue">{len(momentos.get("preco", []))}</div>
-            <div class="kpi-sub">Ocorrências</div>
+                # 🔥 inteligência por tipo
+                if emocao_negocio == "Perda de interesse":
+                    if m.get("inicio_segundos", 0) < 5:
+                        recomendacao = "Abertura fraca ou sem gancho claro"
+                        acao = "Comece com uma dor direta ou pergunta provocativa"
+                    else:
+                        recomendacao = "Trecho pouco envolvente ou explicação longa"
+                        acao = "Simplifique a fala e traga benefício direto"
+                elif emocao_negocio == "Atenção moderada":
+                    recomendacao = "Cliente acompanhando, mas sem alto envolvimento"
+                    acao = "Reforce valor ou traga prova/exemplo concreto"
+                elif emocao_negocio == "Alto engajamento":
+                    recomendacao = "Momento forte de conexão"
+                    acao = "Aproveite para avançar para fechamento ou próximo passo"
+                else:
+                    acao = ""
+
+
+                if emocao_negocio == "Perda de interesse":
+                    cor_borda = "rgba(255,90,90,0.6)"
+                    cor_bg = "rgba(255,90,90,0.08)"
+                    recomendacao = '<div style="font-size:0.8rem;color:#9fb6ff;margin-top:4px;">Revise esse trecho: provavelmente falta clareza ou impacto inicial.</div>'
+                elif emocao_negocio == "Atenção moderada":
+                    cor_borda = "rgba(255,200,80,0.6)"
+                    cor_bg = "rgba(255,200,80,0.08)"
+                elif emocao_negocio == "Alto engajamento":
+                    cor_borda = "rgba(80,200,120,0.6)"
+                    cor_bg = "rgba(80,200,120,0.08)"
+
+                st.markdown(f"""
+                <div style="background:{cor_bg};border:1px solid {cor_borda};border-radius:16px;padding:14px 16px;margin-bottom:12px;min-height:92px;display:flex;flex-direction:column;justify-content:center;box-shadow:0 10px 24px rgba(0,0,0,.18);">
+                    <div style="font-size:0.74rem;color:#9fb6ff;text-transform:uppercase;letter-spacing:.04em;">{formatar_tempo(m.get("inicio_segundos"))} – {formatar_tempo(m.get("fim_segundos"))}</div>
+                    <div style="font-weight:800;color:#eef4ff;margin-top:4px;font-size:0.95rem;">{emocao_negocio}</div>
+                    <div style="font-size:0.8rem;color:#9fb6ff;margin-top:4px;">{recomendacao}</div>
+            <div style="font-size:0.78rem;color:#6ee7b7;margin-top:4px;font-weight:500;">👉 {acao}</div>
+                </div>
+                """, unsafe_allow_html=True)
+
+    st.markdown('<div class="section-title">Evidências da Conversa</div>', unsafe_allow_html=True)
+
+    ev_left, ev_right = st.columns([2, 1], gap="large")
+
+    with ev_left:
+        if os.path.exists(transcription_path):
+            with open(transcription_path, "r", encoding="utf-8") as f:
+                texto = f.read()
+
+            partes = texto.split(".")
+            frases = [parte.strip() for parte in partes if len(parte.strip()) > 20]
+
+            momentos_texto = []
+            if len(frases) >= 1:
+                momentos_texto.append(("Abertura", frases[0]))
+            if len(frases) >= 2:
+                momentos_texto.append(("Descoberta", frases[1]))
+            if len(frases) >= 3:
+                momentos_texto.append(("Contexto", frases[2]))
+
+            st.markdown('<div class="section-title">Trechos relevantes</div>', unsafe_allow_html=True)
+
+            queda_local = metrics.get("queda_interesse_segundos", 0)
+
+            for i, (titulo, frase) in enumerate(momentos_texto):
+                destaque = ""
+                sugestao = ""
+                impacto = ""
+                score_label = ""
+                frase_formatada = frase
+
+                if i == 0 and queda_local and queda_local < 3:
+                    palavras = frase.split(" ")
+                    if len(palavras) >= 4:
+                        trecho = " ".join(palavras[:4])
+                        frase_formatada = frase.replace(
+                            trecho,
+                            f"<span style='color:#ff9b9b;font-weight:600;'>{trecho}</span>"
+                        )
+
+                    score_label = '<div style="position:absolute;right:12px;top:10px;font-size:0.7rem;color:#ff6b6b;">crítico</div>'
+                    destaque = (
+                        '<div style="margin-top:10px;padding:8px 10px;border-radius:8px;'
+                        'background:rgba(255,90,90,0.08);border:1px solid rgba(255,90,90,0.35);'
+                        'color:#ff9b9b;font-size:0.78rem;font-weight:600;">'
+                        '⚠️ Queda de atenção<br>'
+                        '<span style="color:#ffdede;font-weight:400;">Possível causa: abertura pouco específica ou sem proposta clara</span>'
+                        '</div>'
+                    )
+                    frase_lower = frase.lower()
+
+                    produto_base = "uma solução que resolva melhor a necessidade do cliente"
+                    beneficio_base = "mais clareza sobre o valor da oferta"
+                    exemplo_abertura = "Você já tem hoje uma solução que resolve isso do jeito que precisa?"
+
+                    if "copo" in frase_lower:
+                        produto_base = "um copo que mantém a bebida na temperatura ideal"
+                        beneficio_base = "mais praticidade no dia a dia"
+                        exemplo_abertura = "Você já tem um copo que mantém sua bebida na temperatura ideal por mais tempo?"
+                    elif "caf" in frase_lower or "café" in frase_lower:
+                        produto_base = "uma solução melhor para o consumo de café no dia a dia"
+                        beneficio_base = "mais conforto e praticidade ao tomar café"
+                        exemplo_abertura = "Você costuma tomar café fora de casa e sentir que a bebida perde a temperatura rápido?"
+                    elif "preço" in frase_lower or "preco" in frase_lower:
+                        produto_base = "uma opção com melhor custo-benefício"
+                        beneficio_base = "mais valor percebido antes da discussão de preço"
+                        exemplo_abertura = "Você está buscando mais economia sem abrir mão da qualidade?"
+                    elif "venda" in frase_lower or "cliente" in frase_lower:
+                        produto_base = "uma abordagem comercial mais eficiente"
+                        beneficio_base = "mais conexão logo nos primeiros segundos"
+                        exemplo_abertura = "Você sente que, às vezes, o cliente perde o interesse logo no começo da conversa?"
+                    elif "produto" in frase_lower:
+                        produto_base = "um produto mais alinhado à necessidade apresentada"
+                        beneficio_base = "mais aderência ao que o cliente procura"
+                        exemplo_abertura = "O que seria mais importante para você na escolha desse produto?"
+
+                    sugestao = (
+                        '<div style="color:#8fb3ff;font-size:0.78rem;margin-top:6px;line-height:1.4;">'
+                        f'💡 Sugestão: abra conectando a dor ou o benefício principal do cliente em torno de {beneficio_base}.<br>'
+                        f''
+                        '</div>'
+                    )
+                    impacto = (
+                        '<div style="font-size:0.75rem;color:#6ee7b7;margin-top:4px;line-height:1.4;">'
+                        '🎯 Impacto: aumenta retenção nos primeiros segundos'
+                        '</div>'
+                    )
+
+                # 🔥 SCORE POR TRECHO
+                score = 70
+                score_label_txt = "bom"
+                cor_score = "#6ee7b7"
+
+                if i == 0:
+                    if queda_local and queda_local < 3:
+                        score = 30
+                        score_label_txt = "crítico"
+                        cor_score = "#ff6b6b"
+                    else:
+                        score = 55
+                        score_label_txt = "atenção"
+                        cor_score = "#facc15"
+
+                elif i == 1:
+                    score = 65
+                    score_label_txt = "ok"
+                    cor_score = "#facc15"
+
+                elif i == 2:
+                    score = 75
+                    score_label_txt = "bom"
+                    cor_score = "#6ee7b7"
+
+                score_badge = f'<div style="position:absolute;right:12px;top:10px;font-size:0.7rem;color:{cor_score};font-weight:600;">{score} • {score_label_txt}</div>'
+
+                card_html = (
+                    '<div class="card" style="margin-bottom:10px;position:relative;">'
+                    + score_badge +
+                    '<div style="font-size:0.78rem;color:#dbe6ff;text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px;font-weight:700;">'
+                    + titulo +
+                    '</div>'
+                    + '<div style="color:#eef4ff;">"'
+                    + frase_formatada +
+                    '."</div>'
+                    + destaque
+                    + sugestao
+                    + impacto
+                    + '</div>'
+                )
+
+                st.markdown(card_html, unsafe_allow_html=True)
+
+    with ev_right:
+        st.markdown('<div class="section-title">Leitura da Conversa</div>', unsafe_allow_html=True)
+
+        queda_ev = metrics.get("queda_interesse_segundos")
+        resistencia_ev = None
+        melhor_ev = None
+
+        for m in metrics.get("momentos_impacto", []):
+            e = str(m.get("emocao", "")).lower()
+            if resistencia_ev is None and e in ["resistencia", "resistência", "rejeicao", "rejeição", "raiva"]:
+                resistencia_ev = m.get("inicio_segundos")
+            if melhor_ev is None and e in ["interesse", "curiosidade", "neutro"]:
+                melhor_ev = m.get("fim_segundos")
+
+        texto1 = "A atenção caiu muito cedo, indicando que a abertura não gerou interesse suficiente."
+        if queda_ev and queda_ev > 5:
+            texto1 = "A atenção caiu ao longo da conversa, possivelmente por excesso de explicação."
+
+        st.markdown(f"""
+        <div class="score-card compact-insight">
+            <div class="small-label">Perda de atenção</div>
+            <div class="metric-value">{formatar_tempo(queda_ev) if queda_ev else "—"}</div>
+            <div class="metric-sub">{texto1}</div>
         </div>
-        ''', unsafe_allow_html=True)
+        """, unsafe_allow_html=True)
 
-    with n2:
-        st.markdown(f'''
-        <div class="kpi-card">
-            <div class="kpi-title">Momentos de interesse</div>
-            <div class="kpi-value green">{len(momentos.get("interesse", []))}</div>
-            <div class="kpi-sub">Sinais positivos de compra</div>
+        texto2 = "Não houve objeção relevante — o problema está na condução inicial."
+        if resistencia_ev:
+            texto2 = "Houve sinal de resistência do cliente."
+
+        st.markdown(f"""
+        <div class="score-card compact-insight">
+            <div class="small-label">Objeção percebida</div>
+            <div class="metric-value">{formatar_tempo(resistencia_ev) if resistencia_ev else "Nenhuma"}</div>
+            <div class="metric-sub">{texto2}</div>
         </div>
-        ''', unsafe_allow_html=True)
+        """, unsafe_allow_html=True)
 
-    with n3:
-        st.markdown(f'''
-        <div class="kpi-card">
-            <div class="kpi-title">Tentativas de fechamento</div>
-            <div class="kpi-value purple">{len(momentos.get("fechamento", []))}</div>
-            <div class="kpi-sub">Chamadas para decisão</div>
+        texto3 = "Há uma boa oportunidade de fechamento — mas ela não foi explorada."
+        if not melhor_ev:
+            texto3 = "Não houve um momento claro de avanço."
+
+        st.markdown(f"""
+        <div class="score-card compact-insight">
+            <div class="small-label">Janela de avanço</div>
+            <div class="metric-value">{formatar_tempo(melhor_ev) if melhor_ev else "—"}</div>
+            <div class="metric-sub">{texto3}</div>
         </div>
-        ''', unsafe_allow_html=True)
+        """, unsafe_allow_html=True)
 
-    if momentos.get("desconto"):
-        st.info("Desconto detectado na negociação.")
-    if momentos.get("duvida"):
-        st.warning("Momentos de dúvida do cliente detectados.")
-
-    st.markdown('<div class="section-title">Frases da Negociação</div>', unsafe_allow_html=True)
-
-    html_frases = '<div class="frases-box">'
-    ordem = ["interesse", "preco", "desconto", "duvida", "fechamento"]
-    nomes = {
-        "interesse": "Interesse",
-        "preco": "Preço",
-        "desconto": "Desconto",
-        "duvida": "Dúvida",
-        "fechamento": "Fechamento"
-    }
-
-    for categoria in ordem:
-        frases = momentos.get(categoria, [])
-        if frases:
-            html_frases += f'<div class="group-title">{nomes.get(categoria, categoria)}</div><ul>'
-            for frase in frases[:5]:
-                html_frases += f'<li>{frase}</li>'
-            html_frases += '</ul>'
-
-    if html_frases == '<div class="frases-box">':
-        html_frases += '<div class="small-muted">Nenhuma frase comercial relevante foi detectada.</div>'
-
-    html_frases += '</div>'
-    st.markdown(html_frases, unsafe_allow_html=True)
-
-    st.markdown('<div class="section-title">Painel Analítico</div>', unsafe_allow_html=True)
-    p1, p2 = st.columns([1.2, 1.1])
-
-    with p1:
-        a1, a2, a3 = st.columns(3)
-        with a1:
-            st.markdown(f'''
-            <div class="kpi-card">
-                <div class="kpi-title">Energia vocal</div>
-                <div class="kpi-value blue">{str(vocal.get("energia_vocal", "—")).replace(".", ",")}</div>
-                <div class="kpi-sub">Intensidade média da voz</div>
-            </div>
-            ''', unsafe_allow_html=True)
-        with a2:
-            st.markdown(f'''
-            <div class="kpi-card">
-                <div class="kpi-title">Fluidez</div>
-                <div class="kpi-value green">{str(vocal.get("fluidez", "—")).replace(".", ",")}</div>
-                <div class="kpi-sub">Continuidade da fala</div>
-            </div>
-            ''', unsafe_allow_html=True)
-        with a3:
-            st.markdown(f'''
-            <div class="kpi-card">
-                <div class="kpi-title">Pausas</div>
-                <div class="kpi-value purple">{vocal.get("quantidade_pausas", "—")}</div>
-                <div class="kpi-sub">Pausas longas detectadas</div>
-            </div>
-            ''', unsafe_allow_html=True)
-
-        b1, b2, b3, b4 = st.columns(4)
-        with b1:
-            st.markdown(f'''
-            <div class="kpi-card">
-                <div class="kpi-title">Clareza</div>
-                <div class="kpi-value blue">{str(discurso.get("clareza", "—")).replace(".", ",")}</div>
-                <div class="kpi-sub">Organização da mensagem</div>
-            </div>
-            ''', unsafe_allow_html=True)
-        with b2:
-            st.markdown(f'''
-            <div class="kpi-card">
-                <div class="kpi-title">Confiança verbal</div>
-                <div class="kpi-value green">{str(discurso.get("confianca_verbal", "—")).replace(".", ",")}</div>
-                <div class="kpi-sub">Segurança na linguagem</div>
-            </div>
-            ''', unsafe_allow_html=True)
-        with b3:
-            st.markdown(f'''
-            <div class="kpi-card">
-                <div class="kpi-title">Persuasão</div>
-                <div class="kpi-value purple">{str(discurso.get("persuasao", "—")).replace(".", ",")}</div>
-                <div class="kpi-sub">Força argumentativa</div>
-            </div>
-            ''', unsafe_allow_html=True)
-        with b4:
-            st.markdown(f'''
-            <div class="kpi-card">
-                <div class="kpi-title">Fechamento</div>
-                <div class="kpi-value red">{str(discurso.get("forca_fechamento", "—")).replace(".", ",")}</div>
-                <div class="kpi-sub">Força da chamada final</div>
-            </div>
-            ''', unsafe_allow_html=True)
-
-        st.markdown('<div class="section-title">Visão Estratégica</div>', unsafe_allow_html=True)
-        html_rec = '<div class="strategy-box"><ul>'
-        recs = insights.get("recomendacoes", [])
-        if recs:
-            for rec in recs:
-                html_rec += f'<li>{rec}</li>'
-        else:
-            html_rec += '<li>Nenhuma recomendação disponível.</li>'
-        html_rec += '</ul></div>'
-        st.markdown(html_rec, unsafe_allow_html=True)
-
-    with p2:
-        st.markdown('<div class="section-title">Dados Detalhados</div>', unsafe_allow_html=True)
-        st.dataframe(df, width="stretch", height=430)
-
-    if os.path.exists(transcription_path):
-        with open(transcription_path, "r", encoding="utf-8") as f:
-            transcricao = f.read()
-
-        st.markdown('<div class="section-title">Transcrição</div>', unsafe_allow_html=True)
-        st.text_area("Texto transcrito", transcricao, height=220)

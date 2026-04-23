@@ -1,0 +1,281 @@
+
+import os
+import re
+from typing import Dict, List, Any
+
+
+def _split_sentences(text: str) -> List[str]:
+    text = (text or "").strip()
+    if not text:
+        return []
+    parts = re.split(r'(?<=[\.\?\!])\s+|\n+', text)
+    return [p.strip() for p in parts if p and p.strip()]
+
+
+def _clean_text(text: str) -> str:
+    return re.sub(r"\s+", " ", (text or "")).strip()
+
+
+def _safe_float(value, default=0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return float(default)
+
+
+def _extract_keywords(segment: str) -> List[str]:
+    words = re.findall(r"[A-Za-zÀ-ÿ0-9]+", (segment or "").lower())
+    stop = {
+        "de", "da", "do", "das", "dos", "e", "o", "a", "os", "as", "um", "uma",
+        "para", "por", "com", "sem", "que", "na", "no", "nas", "nos", "em",
+        "é", "ser", "foi", "vai", "tem", "tá", "ta", "mais", "menos", "muito",
+        "isso", "essa", "esse", "esse", "ela", "ele", "eu", "você", "voce",
+        "vocês", "voces", "nós", "nos", "meu", "minha", "seu", "sua", "já", "ja"
+    }
+    freq = {}
+    for w in words:
+        if len(w) < 4 or w in stop:
+            continue
+        freq[w] = freq.get(w, 0) + 1
+    return [k for k, _ in sorted(freq.items(), key=lambda x: (-x[1], x[0]))[:4]]
+
+
+def _contexto_por_tempo(inicio: float, fim: float, total: float) -> str:
+    if total <= 0:
+        return "meio"
+    meio = (inicio + fim) / 2
+    ratio = meio / total
+    if ratio <= 0.20:
+        return "abertura"
+    if ratio >= 0.75:
+        return "fechamento"
+    return "desenvolvimento"
+
+
+def _pick_segment_by_ratio(sentences: List[str], inicio: float, fim: float, total: float) -> str:
+    if not sentences:
+        return ""
+    if len(sentences) == 1:
+        return sentences[0]
+
+    total = max(total, 1.0)
+    start_ratio = max(0.0, min(1.0, inicio / total))
+    end_ratio = max(start_ratio, min(1.0, fim / total if fim else start_ratio + 0.12))
+
+    n = len(sentences)
+    i0 = min(n - 1, int(start_ratio * n))
+    i1 = min(n, max(i0 + 1, int(end_ratio * n) + 1))
+
+    seg = " ".join(sentences[i0:i1]).strip()
+    if not seg:
+        seg = sentences[min(i0, n - 1)]
+    return _clean_text(seg)
+
+
+def _trecho_abertura(sentences: List[str]) -> str:
+    return _clean_text(" ".join(sentences[:2])) if sentences else ""
+
+
+def _trecho_meio(sentences: List[str]) -> str:
+    if not sentences:
+        return ""
+    n = len(sentences)
+    i0 = max(0, n // 3)
+    i1 = min(n, i0 + 2)
+    return _clean_text(" ".join(sentences[i0:i1]))
+
+
+def _trecho_fim(sentences: List[str]) -> str:
+    return _clean_text(" ".join(sentences[-2:])) if sentences else ""
+
+
+def _causa_especifica(segment: str, contexto: str, emocao: str, vocal: Dict[str, Any], discurso: Dict[str, Any]) -> str:
+    segment_l = (segment or "").lower()
+    clareza = _safe_float(discurso.get("clareza", 0))
+    energia = _safe_float(vocal.get("energia_vocal", 0))
+    fluidez = _safe_float(vocal.get("fluidez", 0))
+
+    if emocao == "Perda de interesse":
+        if contexto == "abertura":
+            if "preço" in segment_l or "preco" in segment_l:
+                return "a abertura antecipou preço antes de construir valor"
+            if "boa noite" in segment_l or "tudo bem" in segment_l or "oi" in segment_l:
+                return "a abertura ficou genérica e sem gancho claro"
+            return "o início não mostrou benefício claro nem gerou curiosidade"
+        if clareza < 55:
+            return "a explicação ficou pouco clara para sustentar atenção"
+        if energia < 45:
+            return "a baixa energia vocal pode ter reduzido impacto nesse trecho"
+        return "o trecho perdeu força por excesso de explicação ou pouca objetividade"
+
+    if emocao == "Atenção moderada":
+        if fluidez < 55:
+            return "o cliente acompanhou, mas sem engajar totalmente por falta de fluidez"
+        return "houve acompanhamento, mas faltou um elemento forte de valor ou prova"
+
+    if emocao == "Alto engajamento":
+        if "benef" in segment_l or "vantag" in segment_l or "melhor" in segment_l:
+            return "o trecho conectou bem benefício e necessidade do cliente"
+        return "houve boa conexão entre a fala e o interesse percebido do cliente"
+
+    if emocao == "Resistência comercial":
+        return "o trecho pode ter gerado objeção ou percepção de risco"
+
+    return "o trecho mostrou um sinal relevante na dinâmica da conversa"
+
+
+def _acao_especifica(contexto: str, emocao: str, segment: str) -> str:
+    segment_l = (segment or "").lower()
+
+    if emocao == "Perda de interesse":
+        if contexto == "abertura":
+            return "troque a abertura por uma pergunta de dor ou um benefício direto ligado ao que será vendido"
+        if "preço" in segment_l or "preco" in segment_l:
+            return "reorganize a fala para apresentar valor antes de mencionar preço"
+        return "encurte esse trecho e torne a mensagem mais objetiva e centrada no benefício"
+
+    if emocao == "Atenção moderada":
+        return "insira prova, exemplo prático ou comparação para aumentar o engajamento"
+
+    if emocao == "Alto engajamento":
+        return "use esse padrão como referência e aproxime dele o fechamento ou a próxima pergunta"
+
+    if emocao == "Resistência comercial":
+        return "reduza fricção, reforce segurança e valide a dúvida do cliente antes de avançar"
+
+    return "revise o trecho e torne a fala mais específica para a necessidade do cliente"
+
+
+def _rotulo_negocio(emocao_raw: str) -> str:
+    e = (emocao_raw or "").strip().lower()
+    mapa = {
+        "desconexao": "Perda de interesse",
+        "desconexão": "Perda de interesse",
+        "neutro": "Atenção moderada",
+        "interesse": "Alto engajamento",
+        "curiosidade": "Alto engajamento",
+        "resistencia": "Resistência comercial",
+        "resistência": "Resistência comercial",
+        "apreensao": "Atenção moderada",
+        "apreensão": "Atenção moderada",
+        "rejeicao": "Resistência comercial",
+        "rejeição": "Resistência comercial",
+    }
+    return mapa.get(e, emocao_raw or "Indefinido")
+
+
+def enriquecer_diagnostico_contextual(
+    diagnostico: Dict[str, Any],
+    transcription_path: str,
+    metrics: Dict[str, Any],
+    vocal: Dict[str, Any],
+    discurso: Dict[str, Any],
+    multimodal: Dict[str, Any],
+    momentos: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    diagnostico = dict(diagnostico or {})
+
+    texto = ""
+    if transcription_path and os.path.exists(transcription_path):
+        try:
+            texto = open(transcription_path, "r", encoding="utf-8").read()
+        except Exception:
+            texto = ""
+
+    sentences = _split_sentences(texto)
+
+    total_seg = _safe_float(metrics.get("duracao_total_segundos", 0), 0)
+    if total_seg <= 0:
+        try:
+            total_seg = max(_safe_float(m.get("fim_segundos", 0), 0) for m in (momentos or []))
+        except Exception:
+            total_seg = 0.0
+    if total_seg <= 0:
+        total_seg = 60.0
+
+    momentos_contextuais = []
+    for m in (metrics.get("momentos_impacto") or []):
+        inicio = _safe_float(m.get("inicio_segundos", 0), 0)
+        fim = _safe_float(m.get("fim_segundos", inicio + 3), inicio + 3)
+        emocao_negocio = _rotulo_negocio(str(m.get("emocao", "")))
+        contexto = _contexto_por_tempo(inicio, fim, total_seg)
+        trecho = _pick_segment_by_ratio(sentences, inicio, fim, total_seg)
+        causa = _causa_especifica(trecho, contexto, emocao_negocio, vocal, discurso)
+        acao = _acao_especifica(contexto, emocao_negocio, trecho)
+        palavras = _extract_keywords(trecho)
+
+        momentos_contextuais.append({
+            "inicio_segundos": inicio,
+            "fim_segundos": fim,
+            "contexto": contexto,
+            "emocao_negocio": emocao_negocio,
+            "trecho": trecho,
+            "causa": causa,
+            "acao": acao,
+            "palavras_chave": palavras,
+        })
+
+    if not momentos_contextuais and sentences:
+        abertura = _trecho_abertura(sentences)
+        meio = _trecho_meio(sentences)
+        fim = _trecho_fim(sentences)
+        base = [
+            ("abertura", abertura),
+            ("desenvolvimento", meio),
+            ("fechamento", fim),
+        ]
+        for contexto, trecho in base:
+            if trecho:
+                momentos_contextuais.append({
+                    "inicio_segundos": 0.0,
+                    "fim_segundos": 0.0,
+                    "contexto": contexto,
+                    "emocao_negocio": "Atenção moderada",
+                    "trecho": trecho,
+                    "causa": _causa_especifica(trecho, contexto, "Atenção moderada", vocal, discurso),
+                    "acao": _acao_especifica(contexto, "Atenção moderada", trecho),
+                    "palavras_chave": _extract_keywords(trecho),
+                })
+
+    funcionou = []
+    prejudicou = []
+    melhorar = []
+
+    for item in momentos_contextuais:
+        trecho = item["trecho"][:160] + ("..." if len(item["trecho"]) > 160 else "")
+        palavras = ", ".join(item["palavras_chave"][:3]) if item["palavras_chave"] else ""
+        detalhe = f" Trecho: \"{trecho}\"." if trecho else ""
+        chave = f" Palavras-chave: {palavras}." if palavras else ""
+
+        if item["emocao_negocio"] == "Alto engajamento":
+            funcionou.append(
+                f"No {item['contexto']}, houve maior conexão porque {item['causa']}.{detalhe}{chave}"
+            )
+        elif item["emocao_negocio"] in ["Perda de interesse", "Resistência comercial"]:
+            prejudicou.append(
+                f"No {item['contexto']}, o vídeo perdeu força porque {item['causa']}.{detalhe}{chave}"
+            )
+            melhorar.append(
+                f"No {item['contexto']}, {item['acao']}."
+            )
+        else:
+            melhorar.append(
+                f"No {item['contexto']}, {item['acao']}.{detalhe}{chave}"
+            )
+
+    if funcionou:
+        diagnostico["o_que_funcionou"] = funcionou[:3]
+    if prejudicou:
+        diagnostico["o_que_prejudicou"] = prejudicou[:3]
+    if melhorar:
+        dedup = []
+        seen = set()
+        for x in melhorar:
+            if x not in seen:
+                dedup.append(x)
+                seen.add(x)
+        diagnostico["o_que_melhorar"] = dedup[:4]
+
+    diagnostico["momentos_contextuais"] = momentos_contextuais[:5]
+
+    return diagnostico
