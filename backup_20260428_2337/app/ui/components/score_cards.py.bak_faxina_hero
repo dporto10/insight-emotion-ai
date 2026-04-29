@@ -1,0 +1,26 @@
+﻿import streamlit as st
+
+def render_score_card(titulo, valor, label, pill_html, score_bar):
+
+    cor = "red"
+
+    if str(label).lower() in ["medio","médio"]:
+        cor = "orange"
+    elif str(label).lower() == "bom":
+        cor = "yellow"
+    elif str(label).lower() == "forte":
+        cor = "green"
+
+    html = f'''
+    <div class="score-card">
+        <div class="side-score-title">{titulo}</div>
+        <div class="side-score-value {cor}">{str(valor).replace(".",",")}</div>
+        <div class="side-score-row">
+            {pill_html(label)}
+            <span class="{cor}" style="font-weight:800;">{label}</span>
+        </div>
+        {score_bar(valor)}
+    </div>
+    '''
+
+    st.markdown(html, unsafe_allow_html=True)

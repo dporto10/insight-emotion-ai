@@ -1,24 +1,52 @@
-﻿def classificar_score(valor):
+
+def _safe_float(value, default=0.0):
+    try:
+        return float(value)
+    except Exception:
+        return float(default)
+
+
+def _count_momento(momentos, chave):
+    if isinstance(momentos, dict):
+        return len(momentos.get(chave, []) or [])
+    return 0
+
+
+def classificar_score(valor, minimo_evidencia=True):
     try:
         valor = float(valor)
-    except:
-        return "Indefinido"
+    except Exception:
+        return "Não identificado"
 
-    if valor < 40:
+    if minimo_evidencia and valor <= 0:
+        return "Não identificado"
+
+    if valor < 35:
         return "Fraco"
-    elif valor < 60:
+    elif valor < 55:
         return "Médio"
-    elif valor < 80:
+    elif valor < 75:
         return "Bom"
     return "Forte"
 
 
+def nivel_confianca(*valores):
+    validos = [v for v in valores if v is not None]
+    validos = [v for v in validos if _safe_float(v, 0) > 0]
+
+    if len(validos) >= 4:
+        return "Alta"
+    if len(validos) >= 2:
+        return "Média"
+    return "Baixa"
+
+
 def classificar_reacao_preco(momentos, metrics, discurso):
-    preco_count = len(momentos.get("preco", []))
-    desconto_count = len(momentos.get("desconto", []))
-    duvida_count = len(momentos.get("duvida", []))
+    preco_count = _count_momento(momentos, "preco")
+    desconto_count = _count_momento(momentos, "desconto")
+    duvida_count = _count_momento(momentos, "duvida")
     emocao_pred = str(metrics.get("emocao_predominante", "")).lower()
-    persuasao = float(discurso.get("persuasao", 0) or 0)
+    persuasao = _safe_float(discurso.get("persuasao", 0))
 
     if preco_count == 0:
         return "Não identificado"
@@ -33,97 +61,87 @@ def classificar_reacao_preco(momentos, metrics, discurso):
 
 
 def gerar_diagnostico_comercial(metrics, vocal, discurso, multimodal, momentos):
-    engagement = float(metrics.get("engagement_score", 0) or 0)
+    engagement = _safe_float(metrics.get("engagement_score", 0))
     queda = metrics.get("queda_interesse_segundos")
-    clareza = float(discurso.get("clareza", 0) or 0)
-    persuasao = float(discurso.get("persuasao", 0) or 0)
-    fechamento_score = float(discurso.get("forca_fechamento", 0) or 0)
-    energia = float(vocal.get("energia_vocal", 0) or 0)
-    fluidez = float(vocal.get("fluidez", 0) or 0)
-    score_integrado = float(multimodal.get("score_integrado", 0) or 0)
+    clareza = _safe_float(discurso.get("clareza", 0))
+    persuasao = _safe_float(discurso.get("persuasao", 0))
+    fechamento_score = _safe_float(discurso.get("forca_fechamento", 0))
+    energia = _safe_float(vocal.get("energia_vocal", 0))
+    fluidez = _safe_float(vocal.get("fluidez", 0))
+    score_integrado = _safe_float(multimodal.get("score_integrado", 0))
 
-    if queda is not None:
-        try:
-            queda = float(queda)
-        except:
-            queda = None
+    try:
+        queda = float(queda) if queda is not None else None
+    except Exception:
+        queda = None
 
-    # conexão inicial
+    # Não transformar ausência de sinal em crítica automática
+    confianca_geral = nivel_confianca(engagement, clareza, persuasao, fechamento_score, energia, fluidez, score_integrado)
+
     conexao_base = engagement
-    if queda is not None and queda <= 5:
+    if queda is not None and queda <= 5 and engagement > 0:
         conexao_base = min(conexao_base, 25)
-    elif queda is not None and queda <= 12:
+    elif queda is not None and queda <= 12 and engagement > 0:
         conexao_base = min(conexao_base, 45)
 
     conexao_inicial = classificar_score(conexao_base)
-
-    # apresentação de valor
-    apresentacao_valor_score = (clareza + persuasao) / 2 if (clareza or persuasao) else 0
+    apresentacao_valor_score = (clareza + persuasao) / 2 if (clareza > 0 or persuasao > 0) else 0
     apresentacao_valor = classificar_score(apresentacao_valor_score)
-
-    # reação ao preço
     reacao_preco = classificar_reacao_preco(momentos, metrics, discurso)
-
-    # fechamento
     fechamento = classificar_score(fechamento_score)
 
-    # potencial comercial
-    potencial_score = (
-        engagement * 0.20
-        + clareza * 0.20
-        + persuasao * 0.20
-        + fechamento_score * 0.20
-        + score_integrado * 0.20
-    )
+    valores_potencial = [v for v in [engagement, clareza, persuasao, fechamento_score, score_integrado] if v > 0]
+    potencial_score = sum(valores_potencial) / len(valores_potencial) if valores_potencial else 0
     potencial_comercial = classificar_score(potencial_score)
 
-    pitch_label = "Pitch Fraco"
-    if potencial_score >= 60:
-        pitch_label = "Pitch Promissor"
     if potencial_score >= 75:
         pitch_label = "Pitch Forte"
+    elif potencial_score >= 55:
+        pitch_label = "Pitch Promissor"
+    elif potencial_score > 0:
+        pitch_label = "Pitch com Pontos Críticos"
+    else:
+        pitch_label = "Análise Inconclusiva"
 
     o_que_funcionou = []
     o_que_prejudicou = []
     o_que_melhorar = []
 
-    if len(momentos.get("interesse", [])) > 0:
-        o_que_funcionou.append("Houve interesse ao falar do produto.")
-    if len(momentos.get("desconto", [])) > 0:
-        o_que_funcionou.append("O desconto aumentou a atenção.")
-    if len(momentos.get("fechamento", [])) > 0:
-        o_que_funcionou.append("Houve abertura para fechamento.")
+    if _count_momento(momentos, "interesse") > 0:
+        o_que_funcionou.append("Houve sinais de interesse em momentos específicos da conversa.")
+    if _count_momento(momentos, "fechamento") > 0:
+        o_que_funcionou.append("Houve algum sinal de abertura para avanço ou fechamento.")
+    if persuasao >= 60:
+        o_que_funcionou.append("A fala apresentou bons sinais de persuasão comercial.")
 
-    if queda is not None and queda <= 5:
-        o_que_prejudicou.append("Queda de interesse logo no inicio.")
-        o_que_melhorar.append("Melhorar a abertura nos primeiros 5 segundos.")
-    elif queda is not None and queda <= 12:
-        o_que_prejudicou.append("A atencao cai cedo demais.")
-        o_que_melhorar.append("Fortalecer a abertura antes do primeiro bloco comercial.")
+    if queda is not None and queda <= 5 and engagement > 0:
+        o_que_prejudicou.append("Há evidência de perda de atenção logo no início da conversa.")
+        o_que_melhorar.append("Reforce a abertura com uma dor clara, promessa de valor ou pergunta consultiva.")
+    elif queda is not None and queda <= 12 and engagement > 0:
+        o_que_prejudicou.append("Existe um possível sinal de queda de atenção ainda no começo do pitch.")
+        o_que_melhorar.append("Fortaleça os primeiros segundos antes de entrar na explicação comercial.")
 
-    if energia < 20:
-        o_que_prejudicou.append("Voz com baixa energia.")
-        o_que_melhorar.append("Elevar energia vocal nos trechos principais.")
-    if fluidez < 30:
-        o_que_prejudicou.append("Fluidez baixa na fala.")
-        o_que_melhorar.append("Reduzir pausas longas e deixar a fala mais continua.")
+    if energia > 0 and energia < 25:
+        o_que_prejudicou.append("A energia vocal ficou baixa para uma abordagem comercial.")
+        o_que_melhorar.append("Aumente a energia nos trechos de valor, preço e fechamento.")
+    if fluidez > 0 and fluidez < 35:
+        o_que_prejudicou.append("A fluidez da fala pode ter prejudicado a continuidade da mensagem.")
+        o_que_melhorar.append("Reduza pausas longas e deixe a fala mais contínua.")
     if reacao_preco == "Negativa":
-        o_que_prejudicou.append("O preco gerou resistencia.")
-        o_que_melhorar.append("Apresentar beneficios antes do preco.")
-    if fechamento_score < 40:
-        o_que_prejudicou.append("Fechamento pouco forte.")
-        o_que_melhorar.append("Usar um fechamento mais direto e objetivo.")
-    if clareza < 55:
-        o_que_melhorar.append("Simplificar a mensagem e reforcar a proposta de valor.")
-    if len(momentos.get("desconto", [])) > 0:
-        o_que_melhorar.append("Reforcar valor antes de oferecer desconto.")
+        o_que_prejudicou.append("O preço parece ter gerado resistência ou dúvida.")
+        o_que_melhorar.append("Apresente valor, prova ou benefício antes de falar de preço.")
+    if fechamento_score > 0 and fechamento_score < 40:
+        o_que_prejudicou.append("O fechamento não mostrou força suficiente para conduzir o próximo passo.")
+        o_que_melhorar.append("Use um fechamento mais direto, com convite claro para ação.")
+    if clareza > 0 and clareza < 55:
+        o_que_melhorar.append("Simplifique a proposta de valor e deixe o benefício principal mais explícito.")
 
     if not o_que_funcionou:
-        o_que_funcionou.append("Nao houve sinais claros de resposta comercial forte.")
+        o_que_funcionou.append("Não houve evidência forte de resposta comercial positiva. Esse ponto deve ser validado com mais dados do vídeo.")
     if not o_que_prejudicou:
-        o_que_prejudicou.append("Nao foram detectados pontos criticos relevantes.")
+        o_que_prejudicou.append("Não foram encontrados pontos críticos confirmados com alta evidência.")
     if not o_que_melhorar:
-        o_que_melhorar.append("Manter a estrutura atual e testar pequenos ajustes.")
+        o_que_melhorar.append("Manter a estrutura geral e testar ajustes pontuais nos trechos de maior impacto.")
 
     return {
         "pitch_label": pitch_label,
@@ -137,6 +155,8 @@ def gerar_diagnostico_comercial(metrics, vocal, discurso, multimodal, momentos):
         "clareza_label": classificar_score(clareza),
         "fechamento_label": classificar_score(fechamento_score),
         "pontuacao_integrada_label": classificar_score(score_integrado),
+        "nivel_confianca_geral": confianca_geral,
+        "potencial_score": round(potencial_score, 2),
         "o_que_funcionou": o_que_funcionou[:4],
         "o_que_prejudicou": o_que_prejudicou[:4],
         "o_que_melhorar": o_que_melhorar[:4],
