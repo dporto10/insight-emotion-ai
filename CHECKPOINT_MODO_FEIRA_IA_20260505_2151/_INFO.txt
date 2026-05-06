@@ -1,0 +1,1 @@
+﻿Estado salvo: Modo Feira com IA real via API, resumo executivo, plano estratégico e evidências por IA, dashboard mais limpo.
