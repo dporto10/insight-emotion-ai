@@ -218,11 +218,11 @@ Regras obrigatórias:
 7. Explique o impacto comercial: conversão, margem, confiança, objeção, preço ou fechamento.
 8. Responda apenas JSON válido, sem markdown.
 9. Todos os textos devem ser específicos do vídeo analisado.
-10. O plano estratégico deve mudar conforme o produto, necessidade do cliente, preço, forma de pagamento, voz e emoção.
+10. O plano estratégico deve mudar conforme o produto, necessidade do cliente, preço, forma de pagamento, voz e emoção. Mantenha cada prioridade objetiva e com no máximo duas linhas.
 11. As evidências da conversa devem usar trechos reais ou bem próximos da transcrição.
 12. Não repita sempre as mesmas recomendações. Varie conforme o contexto comercial.
 13. O campo evidencias_conversa é obrigatório.
-14. Em evidencias_conversa, cada item deve ter trecho, interpretação e sugestão conectados entre si.
+14. Em evidencias_conversa, cada item deve ter trecho, interpretação e sugestão conectados entre si. Se a transcrição estiver confusa, indique baixa clareza em vez de forçar conclusão.
 15. Não use interpretação de fechamento em trecho de abertura.
 16. Não use sugestão genérica. A sugestão deve responder ao problema daquele trecho específico.
 17. Se a transcrição estiver confusa, diga isso na interpretação em vez de inventar.
@@ -232,12 +232,12 @@ Regras obrigatórias:
 Formato obrigatório:
 {
   "pitch_label": "...",
-  "resumo_executivo": "...",
+  "resumo_executivo": "Resumo curto, direto e específico da venda analisada.",
   "leitura_consultiva": "...",
   "resultado_detectado": "...",
   "preco_negociacao": "...",
   "diagnostico_cards": {
-    "conexao_inicial": "...",
+    "conexao_inicial": "Status + frase curta, exemplo: Médio — abertura útil, mas superficial.",
     "apresentacao_valor": "...",
     "reacao_preco": "...",
     "fechamento": "...",

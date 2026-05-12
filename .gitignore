@@ -1,38 +1,44 @@
-﻿# ambientes virtuais
+﻿# Ambiente virtual
 .venv/
 .venv310/
-venv_relatorio/
+venv/
+env/
 
-# cache python
+# Chaves e variáveis sensíveis
+.env
+*.key
+
+# Cache Python
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
 
-# saídas geradas
-data/processed/
-data/uploads/
-output/
-input/
-
-# arquivos antigos gerados na raiz
-audio.wav
-transcricao.txt
-emocoes_detalhadas.csv
-resumo_emocoes.txt
-timeline_emocao.txt
-timeline_emocao.png
-relatorio_final.txt
-
-# backups e arquivos grandes
-backups/
-*.zip
-
-# configs locais
+# VS Code local
 .vscode/
 
-# sistema
+# Streamlit secrets
+.streamlit/secrets.toml
+
+# Dados locais e vídeos
+data/
+data/uploads/
+data/processed/
+
+# Backups e checkpoints locais
+backups/
+CHECKPOINT_*/
+*.bak*
+*backup*
+dashboard_backup_*
+auditoria_*.txt
+
+# Pacotes e temporários
+_pacote_transferencia/
+*.zip
+*.tmp
+*.log
+
+# Sistema
 .DS_Store
 Thumbs.db
-
-.env
