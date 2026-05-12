@@ -42,3 +42,15 @@ _pacote_transferencia/
 # Sistema
 .DS_Store
 Thumbs.db
+
+# Arquivos antigos de manutenção/teste
+CHECKPOINT_*/
+backup_*/
+dashboard_auditoria_ui.txt
+fix_dashboard_import.py
+patch_fontes_dashboard.py
+remove_bom_dashboard.py
+restaurar_dashboard.ps1
+update_dashboard_style.py
+temp_video.mp4
+*.mp4
